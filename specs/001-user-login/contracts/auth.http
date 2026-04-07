@@ -1,0 +1,148 @@
+# Contracts: Auth HTTP Routes
+# Branch: 001-user-login | Date: 2026-04-06
+#
+# Formato: RFC 9110 HTTP semantics + exemplos de request/response
+# Todos os endpoints retornam HTML (htmx SSR) ou redirect HTTP,
+# nunca JSON — aplicação é SSR-first.
+#
+# Variáveis:
+@baseUrl = http://localhost:3000
+
+###############################################################################
+# FR-001: Login com e-mail e senha
+###############################################################################
+
+# POST /auth/login
+# Autentica o usuário. Retorna redirect 303 em sucesso, ou HTML de erro inline.
+#
+# Rate limit: 5 req / 15 min por (email + IP) — 429 se excedido
+# Validações: email não vazio + formato válido; password não vazio (Zod server-side)
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/x-www-form-urlencoded
+
+email=usuario%40exemplo.com&password=SenhaSegura123&remember_me=on
+
+# Resposta — sucesso (FR-001 SC-1, SC-2, SC-3):
+# HTTP/1.1 303 See Other
+# Location: /dashboard
+# Set-Cookie: sessionId=<opaque>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000
+#             (Max-Age=2592000 = 30 dias — presente apenas se remember_me=on)
+
+# Resposta — credenciais inválidas (FR-002):
+# HTTP/1.1 200 OK
+# Content-Type: text/html
+# <div id="login-error" role="alert" aria-live="polite">
+#   Credenciais inválidas.
+# </div>
+# (EXATAMENTE a mesma mensagem para e-mail inexistente e senha errada)
+
+# Resposta — campos em branco (FR-009):
+# HTTP/1.1 200 OK
+# Content-Type: text/html
+# <div id="login-error" role="alert">
+#   Os campos e-mail e senha são obrigatórios.
+# </div>
+
+# Resposta — bloqueio ativo (FR-004):
+# HTTP/1.1 429 Too Many Requests
+# Retry-After: 900
+# Content-Type: text/html
+# <div id="login-error" role="alert">
+#   Acesso temporariamente bloqueado. Tente novamente em 14 minutos.
+# </div>
+
+###############################################################################
+# FR-001: Logout
+###############################################################################
+
+# POST /auth/logout
+# Encerra a sessão ativa. Destrói session no store e apaga cookie.
+# Método POST para prevenir logout por CSRF via GET.
+
+POST {{baseUrl}}/auth/logout
+Cookie: sessionId=<valor-da-sessao>
+
+# Resposta:
+# HTTP/1.1 303 See Other
+# Location: /login
+# Set-Cookie: sessionId=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0
+
+###############################################################################
+# FR-006 / FR-007: Solicitar recuperação de senha
+###############################################################################
+
+# POST /auth/forgot-password
+# Solicita envio de link de recuperação. Resposta SEMPRE genérica (FR-007),
+# independentemente de o e-mail existir ou não no DB.
+#
+# Rate limit: 3 req / 1h por IP (proteção anti-spam)
+
+POST {{baseUrl}}/auth/forgot-password
+Content-Type: application/x-www-form-urlencoded
+
+email=usuario%40exemplo.com
+
+# Resposta — sempre (independente de o e-mail existir):
+# HTTP/1.1 200 OK
+# Content-Type: text/html
+# <p>Se este endereço de e-mail estiver cadastrado, você receberá um link de
+#    recuperação em breve.</p>
+
+###############################################################################
+# FR-006 / FR-008: Acessar link de recuperação
+###############################################################################
+
+# GET /auth/reset-password?token=<hex-64-chars>
+# Valida o token e exibe formulário de nova senha (se válido).
+
+GET {{baseUrl}}/auth/reset-password?token=a3f9...hex64
+
+# Resposta — token válido:
+# HTTP/1.1 200 OK
+# Content-Type: text/html
+# [formulário com campos: new_password, confirm_password]
+
+# Resposta — token inválido ou expirado (FR-008):
+# HTTP/1.1 200 OK
+# Content-Type: text/html
+# <p>Este link não é mais válido. <a href="/auth/forgot-password">Solicite um novo.</a></p>
+
+###############################################################################
+# FR-006 / FR-008: Redefinir senha
+###############################################################################
+
+# POST /auth/reset-password
+# Consome o token e atualiza a senha do usuário.
+# Token deve ser válido (não usado, não expirado).
+
+POST {{baseUrl}}/auth/reset-password
+Content-Type: application/x-www-form-urlencoded
+
+token=a3f9...hex64&new_password=NovaSenha456&confirm_password=NovaSenha456
+
+# Resposta — sucesso:
+# HTTP/1.1 303 See Other
+# Location: /login?reset=success
+
+# Resposta — token inválido/expirado:
+# HTTP/1.1 200 OK
+# [mesma mensagem de link inválido acima]
+
+# Resposta — senhas não coincidem / muito curta:
+# HTTP/1.1 200 OK
+# <div role="alert">A senha deve ter pelo menos 8 caracteres.</div>
+
+###############################################################################
+# Redirect: usuário já autenticado acessa /login
+###############################################################################
+
+# GET /login (com sessão ativa)
+# Usuário já autenticado é redirecionado (Edge Case do spec)
+
+GET {{baseUrl}}/login
+Cookie: sessionId=<sessao-ativa>
+
+# Resposta:
+# HTTP/1.1 303 See Other
+# Location: /dashboard
